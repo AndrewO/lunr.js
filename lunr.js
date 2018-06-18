@@ -1841,6 +1841,7 @@ lunr.TokenSet.Builder.prototype.minimize = function (downTo) {
  * @param {lunr.TokenSet} attrs.tokenSet - An set of all corpus tokens.
  * @param {string[]} attrs.fields - The names of indexed document fields.
  * @param {lunr.Pipeline} attrs.pipeline - The pipeline to use for search terms.
+ * @param {Object} attrs.filterIndexes - Filters indexed by field, value, docRef.
  */
 lunr.Index = function (attrs) {
   this.invertedIndex = attrs.invertedIndex
@@ -1848,6 +1849,7 @@ lunr.Index = function (attrs) {
   this.tokenSet = attrs.tokenSet
   this.fields = attrs.fields
   this.pipeline = attrs.pipeline
+  this.filterIndexes = attrs.filterIndexes
 }
 
 /**
@@ -1912,7 +1914,8 @@ lunr.Index = function (attrs) {
  * Performs a search against the index using lunr query syntax.
  *
  * Results will be returned sorted by their score, the most relevant results
- * will be returned first.
+ * will be returned first.  For details on how the score is calculated, please see
+ * the {@link https://lunrjs.com/guides/searching.html#scoring|guide}.
  *
  * For more programmatic querying use lunr.Index#query.
  *
@@ -1920,11 +1923,11 @@ lunr.Index = function (attrs) {
  * @throws {lunr.QueryParseError} If the passed query string cannot be parsed.
  * @returns {lunr.Index~Result[]}
  */
-lunr.Index.prototype.search = function (queryString) {
+lunr.Index.prototype.search = function (queryString, filters) {
   return this.query(function (query) {
     var parser = new lunr.QueryParser(queryString, query)
     parser.parse()
-  })
+  }, filters)
 }
 
 /**
@@ -1952,13 +1955,16 @@ lunr.Index.prototype.search = function (queryString) {
  * @param {lunr.Index~queryBuilder} fn - A function that is used to build the query.
  * @returns {lunr.Index~Result[]}
  */
-lunr.Index.prototype.query = function (fn) {
-  // for each query clause
+lunr.Index.prototype.query = function (fn, filters) {
+
+  // Pre-filter corpus, then for each query clause
   // * process terms
   // * expand terms from token set
   // * find matching documents and metadata
   // * get document vectors
   // * score documents
+
+  var filteredDocRefs = filterDocRefs(this.filterIndexes, filters)
 
   var query = new lunr.Query(this.fields),
       matchingFields = Object.create(null),
@@ -2053,9 +2059,9 @@ lunr.Index.prototype.query = function (fn) {
            */
           var field = clause.fields[k],
               fieldPosting = posting[field],
-              matchingDocumentRefs = Object.keys(fieldPosting),
               termField = expandedTerm + "/" + field,
-              matchingDocumentsSet = new lunr.Set(matchingDocumentRefs)
+              matchingDocumentsSet = filteredDocRefs.intersect(new lunr.Set(Object.keys(fieldPosting))),
+              matchingDocumentRefs = Object.keys(matchingDocumentsSet.elements)
 
           /*
            * if the presence of this term is required ensure that the matching
@@ -2261,7 +2267,8 @@ lunr.Index.prototype.toJSON = function () {
     fields: this.fields,
     fieldVectors: fieldVectors,
     invertedIndex: invertedIndex,
-    pipeline: this.pipeline.toJSON()
+    pipeline: this.pipeline.toJSON(),
+    filterIndexes: this.filterIndexes
   }
 }
 
@@ -2278,7 +2285,8 @@ lunr.Index.load = function (serializedIndex) {
       invertedIndex = {},
       serializedInvertedIndex = serializedIndex.invertedIndex,
       tokenSetBuilder = new lunr.TokenSet.Builder,
-      pipeline = lunr.Pipeline.load(serializedIndex.pipeline)
+      pipeline = lunr.Pipeline.load(serializedIndex.pipeline),
+      filterIndexes = serializedIndex.filterIndexes
 
   if (serializedIndex.version != lunr.version) {
     lunr.utils.warn("Version mismatch when loading serialised index. Current version of lunr '" + lunr.version + "' does not match serialized index '" + serializedIndex.version + "'")
@@ -2309,10 +2317,61 @@ lunr.Index.load = function (serializedIndex) {
   attrs.invertedIndex = invertedIndex
   attrs.tokenSet = tokenSetBuilder.root
   attrs.pipeline = pipeline
+  attrs.filterIndexes = filterIndexes
 
   return new lunr.Index(attrs)
 }
-/*!
+
+// This is just a set intersection over a bunch of unioned doc refs. It could be a lot cleaner with
+// ES6 array and set functions (or an external library). It appears that that's not how Lunr is implemented.
+// I'll see about refactoring later if that doesn't break Lunr's basic assertions about minimum ES version or
+// lack of dependency requirements.
+function filterDocRefs(index, filters) {
+  if (filters) {
+    var docRefs = {}
+    var filterKeys = Object.keys(filters)
+    for (var i = 0; i < filterKeys.length; i++) {
+      var filterKey = filterKeys[i]
+      var filterValues = filters[filterKey]
+      var filteredDocRefs = filterDocRefsByField(index, filterKey, filterValues)
+      for (var j = 0; j < filteredDocRefs.length; j++) {
+        if (docRefs[filteredDocRefs[j]] === undefined) {
+          docRefs[filteredDocRefs[j]] = 1
+        } else {
+          docRefs[filteredDocRefs[j]]++
+        }
+      }
+    }
+
+    var allDocRefKeys = Object.keys(docRefs)
+    var docRefKeys = []
+    for (var k = 0; k < allDocRefKeys.length; k++) {
+      var docRefKey = allDocRefKeys[k]
+      if (docRefs[docRefKey] == filterKeys.length) {
+        docRefKeys.push(docRefKey)
+      }
+    }
+    return new lunr.Set(docRefKeys)
+  } else {
+    return lunr.Set.complete
+  }
+
+}
+
+function filterDocRefsByField(index, filterKey, filterValues) {
+  var ret = []
+  filterValues = Array.isArray(filterValues) ? filterValues : [filterValues]
+
+  for(var j = 0; j < filterValues.length; j++) {
+    var filterValue = filterValues[j]
+    var filteredDocRefs = index[filterKey][filterValue]
+    if (Array.isArray(filteredDocRefs)) {
+      ret = ret.concat(filteredDocRefs)
+    }
+  }
+
+  return ret
+}/*!
  * lunr.Builder
  * Copyright (C) 2018 Oliver Nightingale
  */
@@ -2329,6 +2388,7 @@ lunr.Index.load = function (serializedIndex) {
  * @constructor
  * @property {string} _ref - Internal reference to the document reference field.
  * @property {string[]} _fields - Internal reference to the document fields to index.
+ * @property {string[]} _filterFields - Internal reference to the document fields to add to filter index.
  * @property {object} invertedIndex - The inverted index maps terms to document fields.
  * @property {object} documentTermFrequencies - Keeps track of document term frequencies.
  * @property {object} documentLengths - Keeps track of the length of documents added to the index.
@@ -2344,7 +2404,9 @@ lunr.Index.load = function (serializedIndex) {
 lunr.Builder = function () {
   this._ref = "id"
   this._fields = []
+  this._filterFields = []
   this.invertedIndex = Object.create(null)
+  this.filterIndexes = Object.create(null)
   this.fieldTermFrequencies = {}
   this.fieldLengths = {}
   this.tokenizer = lunr.tokenizer
@@ -2385,6 +2447,19 @@ lunr.Builder.prototype.ref = function (ref) {
  */
 lunr.Builder.prototype.field = function (field) {
   this._fields.push(field)
+}
+
+/**
+ * Adds a field to the list of document fields that will be indexed as a filter.
+ *
+ * All filter fields should be added before adding documents to the index. Adding fields after
+ * a document has been indexed will have no effect on already indexed documents.
+ *
+ * @param {string} field - The name of a field to index in all documents.
+ */
+lunr.Builder.prototype.filterField = function (field) {
+  this._filterFields.push(field)
+  this.filterIndexes[field] = {}
 }
 
 /**
@@ -2432,6 +2507,23 @@ lunr.Builder.prototype.add = function (doc) {
   var docRef = doc[this._ref]
 
   this.documentCount += 1
+
+  for (var i = 0; i < this._filterFields.length; i++) {
+    var fieldName = this._filterFields[i],
+        field = doc[fieldName],
+        terms = Array.isArray(field) ? field : [field],
+        fieldTerms = Object.create(null)
+
+    for (var j = 0; j < terms.length; j++) {
+      var term = terms[j]
+
+      if (this.filterIndexes[fieldName][term] == undefined) {
+        this.filterIndexes[fieldName][term] = []
+      }
+
+      this.filterIndexes[fieldName][term].push(docRef)
+    }
+  }
 
   for (var i = 0; i < this._fields.length; i++) {
     var fieldName = this._fields[i],
@@ -2606,7 +2698,8 @@ lunr.Builder.prototype.build = function () {
     fieldVectors: this.fieldVectors,
     tokenSet: this.tokenSet,
     fields: this._fields,
-    pipeline: this.searchPipeline
+    pipeline: this.searchPipeline,
+    filterIndexes: this.filterIndexes
   })
 }
 

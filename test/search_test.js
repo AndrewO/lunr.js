@@ -4,16 +4,22 @@ suite('search', function () {
       id: 'a',
       title: 'Mr. Green kills Colonel Mustard',
       body: 'Mr. Green killed Colonel Mustard in the study with the candlestick. Mr. Green is not a very nice fellow.',
+      people: ['Mr. Green', 'Colonel Mustard'],
+      hasWoman: false,
       wordCount: 19
     },{
       id: 'b',
       title: 'Plumb waters plant',
       body: 'Professor Plumb has a green plant in his study',
+      people: ['Professor Plumb'],
+      hasWoman: false,
       wordCount: 9
     },{
       id: 'c',
       title: 'Scarlett helps Professor',
       body: 'Miss Scarlett watered Professor Plumbs green plant while he was away from his office last week.',
+      people: ['Miss Scarlett', 'Professor Plumb'],
+      hasWoman: true,
       wordCount: 16
     }]
 
@@ -21,6 +27,9 @@ suite('search', function () {
       this.ref('id')
       this.field('title')
       this.field('body')
+
+      this.filterField('people')
+      this.filterField('hasWoman')
 
       documents.forEach(function (document) {
         this.add(document)
@@ -44,7 +53,7 @@ suite('search', function () {
         })
       }
 
-      suite('#seach', function () {
+      suite('#search', function () {
         setup(function () {
           this.results = this.idx.search('scarlett')
         })
@@ -119,6 +128,36 @@ suite('search', function () {
         test('no matches', function () {
           assert.lengthOf(this.results, 0)
         })
+      })
+    })
+
+    suite('filtered search', function() {
+      test('single filter value', function () {
+        var results = this.idx.search('plant', {
+          people: 'Miss Scarlett'
+        })
+
+        assert.lengthOf(results, 1)
+        assert.equal('c', results[0].ref)
+      })
+
+      test('multiple filter values acts as an implicit OR', function () {
+        var results = this.idx.search('study', {
+          people: ['Mr. Green', 'Miss Scarlett']
+        })
+
+        assert.lengthOf(results, 1)
+        assert.equal('a', results[0].ref)
+      })
+
+      test('multiple filters act as an implicit AND', function () {
+        var results = this.idx.search('plant', {
+          hasWoman: false,
+          people: ['Mr. Green', 'Professor Plumb']
+        })
+
+        assert.lengthOf(results, 1)
+        assert.equal('b', results[0].ref)
       })
     })
   })

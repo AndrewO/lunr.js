@@ -50,6 +50,15 @@ suite('lunr.Builder', function () {
       assert.deepProperty(this.builder.invertedIndex, 'word.title.id.constructor')
       assert.deepEqual(this.builder.invertedIndex.word.title.id.constructor, ['foo'])
     })
+
+    test('filter field is added to index', function () {
+      this.builder.filterField('colors')
+      this.builder.add({id: 1, colors: ['red', 'blue']})
+
+      assert.deepEqual(this.builder.filterIndexes.colors.red, [1])
+      assert.deepEqual(this.builder.filterIndexes.colors.blue, [1])
+      assert.equal(this.builder.filterIndexes.colors.yellow, undefined)
+    })
   })
 
   suite('#field', function () {
@@ -57,6 +66,15 @@ suite('lunr.Builder', function () {
       var builder = new lunr.Builder
       builder.field('foo')
       assert.include(builder._fields, 'foo')
+    })
+  })
+
+  suite('#filterField', function () {
+    test('defining filter fields to index', function () {
+      var builder = new lunr.Builder
+      builder.filterField('foo')
+      assert.include(builder._filterFields, 'foo')
+      assert.deepEqual(builder.filterIndexes['foo'], {})
     })
   })
 
